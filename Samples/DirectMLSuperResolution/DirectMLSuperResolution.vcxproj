@@ -353,6 +353,7 @@
     <ClInclude Include="LoadWeights.h" />
     <ClInclude Include="MediaEnginePlayer.h" />
     <ClInclude Include="pch.h" />
+    <ClInclude Include="pix3_dll_helper.h" />
     <ClInclude Include="StepTimer.h" />
   </ItemGroup>
   <ItemGroup>
