@@ -8,8 +8,8 @@
 
 using Microsoft::WRL::ComPtr;
 
-HlslDispatchable::HlslDispatchable(std::shared_ptr<Device> device, const Model::HlslDispatchableDesc& desc, const CommandLineArgs& args) 
-    : m_device(device), m_desc(desc), m_forceDisablePrecompiledShadersOnXbox(args.ForceDisablePrecompiledShadersOnXbox()), m_printHlslDisassembly(args.PrintHlslDisassembly())
+HlslDispatchable::HlslDispatchable(std::shared_ptr<Device> device, const Model::HlslDispatchableDesc& desc, const CommandLineArgs& args, IDxDispatchLogger* logger)
+    : m_device(device), m_desc(desc), m_forceDisablePrecompiledShadersOnXbox(args.ForceDisablePrecompiledShadersOnXbox()), m_printHlslDisassembly(args.PrintHlslDisassembly()), m_logger(logger)
 {
 }
 
@@ -168,7 +168,7 @@ void HlslDispatchable::CreateRootSignatureAndBindingMap()
     {
         if (rootSignatureErrors)
         {
-            LogError(static_cast<LPCSTR>(rootSignatureErrors->GetBufferPointer()));
+            m_logger->LogError(static_cast<LPCSTR>(rootSignatureErrors->GetBufferPointer()));
         }
         THROW_HR(hr);
     }
@@ -231,7 +231,7 @@ void HlslDispatchable::CompileWithDxc()
     if (errors != nullptr && errors->GetStringLength() != 0)
     {
         std::string errorsString{ errors->GetStringPointer() };
-        LogError(fmt::format("DXC failed to compile with errors: {}", errorsString));
+        m_logger->LogError(fmt::format("DXC failed to compile with errors: {}", errorsString).c_str());
     }
 
     HRESULT compileStatus = S_OK;
@@ -296,9 +296,9 @@ void HlslDispatchable::CompileWithDxc()
             nullptr
         ));
 
-        LogInfo("---------------------------------------------------------");
-        LogInfo(static_cast<LPCSTR>(disassemblyText->GetBufferPointer()));
-        LogInfo("---------------------------------------------------------");
+        m_logger->LogInfo("---------------------------------------------------------");
+        m_logger->LogInfo(static_cast<LPCSTR>(disassemblyText->GetBufferPointer()));
+        m_logger->LogInfo("---------------------------------------------------------");
     }
 
     CreateRootSignatureAndBindingMap();
@@ -465,12 +465,8 @@ void HlslDispatchable::Bind(const Bindings& bindings, uint32_t iteration)
     m_device->GetCommandList()->SetComputeRootDescriptorTable(0, m_descriptorHeap->GetGPUDescriptorHandleForHeapStart());
 }
 
-void HlslDispatchable::Dispatch(const Model::DispatchCommand& args, uint32_t iteration)
+void HlslDispatchable::Dispatch(const Model::DispatchCommand& args, uint32_t iteration, DeferredBindings& deferredBinings)
 {
     m_device->RecordDispatch(args.dispatchableName.c_str(), args.threadGroupCount[0], args.threadGroupCount[1], args.threadGroupCount[2]);
-}
-
-void HlslDispatchable::Wait()
-{
     m_device->ExecuteCommandListAndWait();
 }

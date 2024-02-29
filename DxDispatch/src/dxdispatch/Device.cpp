@@ -17,24 +17,52 @@ static bool DebugMessageCallback(void* context, void* commandList, DWORD message
 #else
 static void __stdcall DebugMessageCallback(D3D12_MESSAGE_CATEGORY cat, D3D12_MESSAGE_SEVERITY sev, D3D12_MESSAGE_ID id, LPCSTR message, void* context)
 {
-    LogError(message);
+    if (context)
+    {
+        auto logger = (IDxDispatchLogger*)context;
+        auto fmtMessage = fmt::format("{} {} {} {}", int(cat), int(id), context, message);
+        if ((D3D12_MESSAGE_SEVERITY_INFO == sev) ||
+            (D3D12_MESSAGE_SEVERITY_MESSAGE == sev))
+        {
+            logger->LogInfo(fmtMessage.c_str());
+        }
+        else if (D3D12_MESSAGE_SEVERITY_WARNING == sev)
+        {
+            logger->LogWarning(fmtMessage.c_str());
+        }
+        else
+        {
+            logger->LogError(fmtMessage.c_str());
+        }
+    }
 }
 #endif
 
 Device::Device(
     IAdapter* adapter, 
+    D3D_FEATURE_LEVEL featureLevel,
     bool debugLayersEnabled, 
     D3D12_COMMAND_LIST_TYPE commandListType, 
     uint32_t dispatchRepeat,
     bool uavBarrierAfterDispatch,
     bool aliasingBarrierAfterDispatch,
+    bool clearShaderCaches,
+    bool disableGpuTimeout,
+    bool enableDred,
+    bool disableBackgroundProcessing,
+    bool setStablePowerState,
+    uint32_t maxGpuTimeMeasurements,
     std::shared_ptr<PixCaptureHelper> pixCaptureHelper,
     std::shared_ptr<D3d12Module> d3dModule,
-    std::shared_ptr<DmlModule> dmlModule
+    std::shared_ptr<DmlModule> dmlModule,
+    IDxDispatchLogger *logger
     ) : m_pixCaptureHelper(std::move(pixCaptureHelper)),
         m_d3dModule(std::move(d3dModule)),
         m_dmlModule(std::move(dmlModule)),
-        m_dispatchRepeat(dispatchRepeat)
+        m_dispatchRepeat(dispatchRepeat),
+        m_logger(logger),
+        m_restoreBackgroundProcessing(disableBackgroundProcessing),
+        m_restoreStablePowerState(setStablePowerState)
 {
     DML_CREATE_DEVICE_FLAGS dmlCreateDeviceFlags = debugLayersEnabled ? DML_CREATE_DEVICE_FLAG_DEBUG : DML_CREATE_DEVICE_FLAG_NONE;
 
@@ -73,19 +101,58 @@ Device::Device(
 
     THROW_IF_FAILED(m_d3dModule->CreateDevice(
         adapter, 
-        D3D_FEATURE_LEVEL_11_0, 
+        featureLevel, 
         IID_PPV_ARGS(&m_d3d)));
+
+    if(enableDred)
+    {
+        // Enables more debug info for TDRs, can be used with Debugger 
+        // extension see following link for more info:
+        // https://learn.microsoft.com/en-us/windows/win32/direct3d12/use-dred
+        ComPtr<ID3D12DeviceRemovedExtendedDataSettings> pDredSettings;
+        if(SUCCEEDED(m_d3dModule->GetDebugInterface(IID_PPV_ARGS(&pDredSettings))))
+        {
+            pDredSettings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            pDredSettings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+        }
+    }
 
     if (debugLayersEnabled)
     {
         THROW_IF_FAILED(m_d3d->QueryInterface(m_infoQueue.GetAddressOf()));
-        DWORD callbackCookie = 0;
         m_infoQueue->RegisterMessageCallback(
             DebugMessageCallback, 
             D3D12_MESSAGE_CALLBACK_FLAG_NONE, 
             nullptr, 
-            &callbackCookie);
+            &m_callbackCookie);
     }
+
+    if (disableBackgroundProcessing)
+    {
+        HRESULT hr = m_d3d->SetBackgroundProcessingMode(
+            D3D12_BACKGROUND_PROCESSING_MODE_DISABLE_BACKGROUND_WORK,
+            D3D12_MEASUREMENTS_ACTION_KEEP_ALL,
+            nullptr,
+            nullptr
+        );
+
+        if (FAILED(hr))
+        {
+            m_logger->LogError("Failed to disable background processing. Do you have developer mode enabled?");
+            THROW_HR(hr);
+        }
+    }
+
+    if (setStablePowerState)
+    {
+        HRESULT hr = m_d3d->SetStablePowerState(TRUE);
+        if (FAILED(hr))
+        {
+            m_logger->LogError("Failed to set stable power state. Do you have developer mode enabled?");
+            THROW_HR(hr);
+        }
+    }
+
 #endif // !_GAMING_XBOX
 
     THROW_IF_FAILED(m_d3d->CreateFence(
@@ -94,6 +161,7 @@ Device::Device(
         IID_GRAPHICS_PPV_ARGS(m_fence.ReleaseAndGetAddressOf())));
 
     D3D12_COMMAND_QUEUE_DESC queueDesc = {};
+    queueDesc.Flags = disableGpuTimeout ? D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT : D3D12_COMMAND_QUEUE_FLAG_NONE;
     queueDesc.Type = commandListType;
     THROW_IF_FAILED(m_d3d->CreateCommandQueue(
         &queueDesc, 
@@ -119,12 +187,18 @@ Device::Device(
 
     THROW_IF_FAILED(m_dml->CreateCommandRecorder(IID_PPV_ARGS(&m_commandRecorder)));
 
-    D3D12_QUERY_HEAP_DESC queryHeapDesc;
-    queryHeapDesc.Count = timestampCapacity;
-    queryHeapDesc.NodeMask = 0;
-    queryHeapDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+    // Each GPU time measurement requires a pair of timestamps
+    m_timestampCapacity = maxGpuTimeMeasurements * 2;
 
-    THROW_IF_FAILED(m_d3d->CreateQueryHeap(&queryHeapDesc, IID_PPV_ARGS(&m_timestampHeap)));
+    if (m_timestampCapacity > 0)
+    {
+        D3D12_QUERY_HEAP_DESC queryHeapDesc;
+        queryHeapDesc.Count = m_timestampCapacity;
+        queryHeapDesc.NodeMask = 0;
+        queryHeapDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+
+        THROW_IF_FAILED(m_d3d->CreateQueryHeap(&queryHeapDesc, IID_PPV_ARGS(&m_timestampHeap)));
+    }
 
     m_pixCaptureHelper->Initialize(m_queue.Get());
 
@@ -132,14 +206,48 @@ Device::Device(
     {
         m_postDispatchBarriers.emplace_back(CD3DX12_RESOURCE_BARRIER::UAV(nullptr));
     }
+
     if (aliasingBarrierAfterDispatch)
     {
         m_postDispatchBarriers.emplace_back(CD3DX12_RESOURCE_BARRIER::Aliasing(nullptr, nullptr));
+    }
+
+    if (clearShaderCaches)
+    {
+        ClearShaderCaches();
     }
 }
 
 Device::~Device()
 {
+    if (m_callbackCookie != 0)
+    {
+        m_infoQueue->UnregisterMessageCallback(m_callbackCookie);
+        m_callbackCookie = 0;
+    }
+
+    if (m_d3d)
+    {
+        // Restore state for certain features that may have been toggled. Normally this isn't required,
+        // since the state changes don't persist beyond the process lifetime, but the real D3D12 device 
+        // is a singleton that may have other refs in the process (e.g., DxDispatch instance used in 
+        // a test DLL).
+        
+        if (m_restoreBackgroundProcessing)
+        {
+            (void)m_d3d->SetBackgroundProcessingMode(
+                D3D12_BACKGROUND_PROCESSING_MODE_ALLOWED,
+                D3D12_MEASUREMENTS_ACTION_KEEP_ALL,
+                nullptr,
+                nullptr
+            );
+        }
+
+        if (m_restoreStablePowerState)
+        {
+            (void)m_d3d->SetStablePowerState(FALSE);
+        }
+    }
 }
 
 ComPtr<ID3D12Resource> Device::CreateDefaultBuffer(
@@ -375,9 +483,14 @@ void Device::ExecuteCommandListAndWait()
 
 void Device::RecordTimestamp()
 {
+    if (!GpuTimingEnabled())
+    {
+        return;
+    }
+
     m_commandList->EndQuery(m_timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, m_timestampHeadIndex);
-    m_timestampHeadIndex = (m_timestampHeadIndex + 1) % Device::timestampCapacity;
-    if (m_timestampCount < timestampCapacity)
+    m_timestampHeadIndex = (m_timestampHeadIndex + 1) % m_timestampCapacity;
+    if (m_timestampCount < m_timestampCapacity)
     {
         m_timestampCount++;
     }
@@ -385,7 +498,12 @@ void Device::RecordTimestamp()
 
 std::vector<uint64_t> Device::ResolveTimestamps()
 {
-    assert(m_timestampCount <= timestampCapacity);
+    assert(m_timestampCount <= m_timestampCapacity);
+
+    if (!GpuTimingEnabled())
+    {
+        return {};
+    }
 
     auto timestampReadbackBuffer = CreateReadbackBuffer(sizeof(uint64_t) * m_timestampCount);
 
@@ -409,6 +527,10 @@ std::vector<uint64_t> Device::ResolveTimestamps()
 std::vector<double> Device::ResolveTimingSamples()
 {
     std::vector<uint64_t> timestamps = ResolveTimestamps();
+    if (timestamps.empty())
+    {
+        return {};
+    }
 
     uint64_t frequency;
     THROW_IF_FAILED(m_queue->GetTimestampFrequency(&frequency));
@@ -476,11 +598,11 @@ void Device::ClearShaderCaches()
         auto hr = m_d3d->ShaderCacheControl(cache.kind, D3D12_SHADER_CACHE_CONTROL_FLAG_CLEAR);
         if (FAILED(hr))
         {
-            LogInfo(fmt::format("Clearing {} failed. Do you have developer mode enabled?", cache.name));
+            m_logger->LogInfo(fmt::format("Clearing {} failed. Do you have developer mode enabled?", cache.name).c_str());
         }
         else
         {
-            LogInfo(fmt::format("Clearing {} succeeded.", cache.name));
+            m_logger->LogInfo(fmt::format("Clearing {} succeeded.", cache.name).c_str());
         }
     }
 }

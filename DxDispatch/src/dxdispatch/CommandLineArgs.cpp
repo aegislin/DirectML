@@ -31,7 +31,7 @@ CommandLineArgs::CommandLineArgs(int argc, char** argv)
         (
             "m,model", 
             "Path to JSON/ONNX model file", 
-            cxxopts::value<decltype(m_modelPath)>()
+            cxxopts::value<std::filesystem::path>()
         )
         (
             "h,help", 
@@ -41,6 +41,21 @@ CommandLineArgs::CommandLineArgs(int argc, char** argv)
         (
             "S,show_dependencies",
             "Show version info for dependencies including DirectX components",
+            cxxopts::value<bool>()
+        )
+        (
+            "input_path",
+            "Base path for reading input files",
+            cxxopts::value<std::filesystem::path>()
+        )
+        (
+            "output_path",
+            "Base path for writing output files",
+            cxxopts::value<std::filesystem::path>()
+        )
+        (
+            "print_commands",
+            "Prints detail message before and after each command.",
             cxxopts::value<bool>()
         )
         ;
@@ -77,6 +92,11 @@ CommandLineArgs::CommandLineArgs(int argc, char** argv)
             "Timing verbosity level. 0 = show hot timings, 1 = init/cold/hot timings, 2 = show all timing info",
             cxxopts::value<uint32_t>()->default_value("0")
         )
+        (
+            "max_gpu_time_measurements",
+            "Determines the size of the GPU timestamp buffer. A value of 0 will disable GPU timing.",
+            cxxopts::value<uint32_t>()
+        )
         ;
 
     // DIRECTX OPTIONS
@@ -98,12 +118,32 @@ CommandLineArgs::CommandLineArgs(int argc, char** argv)
         )
         (
             "q,queue_type", 
-            "Type of command queue/list to use ('compute' or 'direct')", 
-            cxxopts::value<std::string>()->default_value("direct")
+            "Type of command queue/list to use ('compute' or 'direct')",
+            cxxopts::value<std::string>()
         )
         (
             "clear_shader_caches", 
             "Clears D3D shader caches before running commands", 
+            cxxopts::value<bool>()
+        )
+        (
+            "disable_gpu_timeout", 
+            "Sets D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT on the command queue", 
+            cxxopts::value<bool>()
+        )
+        (
+            "enable_dred", 
+            "Enables SetAutoBreadcrumbsEnablement and SetPageFaultEnablement on the device", 
+            cxxopts::value<bool>()
+        )
+        (
+            "disable_background_processing", 
+            "Disallows UMD from performing PGO in background threads. Requires developer mode.", 
+            cxxopts::value<bool>()
+        )
+        (
+            "set_stable_power_state", 
+            "Sets a device clock rate that may be lower than the maximum but more stable. Requires developer mode.", 
             cxxopts::value<bool>()
         )
         (
@@ -234,7 +274,7 @@ CommandLineArgs::CommandLineArgs(int argc, char** argv)
 
     if (result.count("model")) 
     { 
-        m_modelPath = result["model"].as<decltype(m_modelPath)>(); 
+        m_modelPath = result["model"].as<std::filesystem::path>();
     }
 
     if (result.count("adapter")) 
@@ -247,9 +287,29 @@ CommandLineArgs::CommandLineArgs(int argc, char** argv)
         m_showAdapters = result["show_adapters"].as<bool>(); 
     }
 
+    if (result.count("print_commands"))
+    {
+        m_commandPrinting = result["print_commands"].as<bool>();
+    }
+
+    if (result.count("input_path"))
+    {
+        m_inputRelPath = result["input_path"].as<std::filesystem::path>();
+    }
+
+    if(result.count("output_path"))
+    {
+        m_outputRelPath = result["output_path"].as<std::filesystem::path>();
+    }
+
     if (result.count("timing_verbosity"))
     {
         m_timingVerbosity = static_cast<TimingVerbosity>(result["timing_verbosity"].as<uint32_t>());
+    }
+
+    if (result.count("max_gpu_time_measurements"))
+    {
+        m_maxGpuTimeMeasurements = result["max_gpu_time_measurements"].as<uint32_t>();
     }
 
     if (result.count("show_dependencies"))
@@ -260,6 +320,26 @@ CommandLineArgs::CommandLineArgs(int argc, char** argv)
     if (result.count("clear_shader_caches"))
     {
         m_clearShaderCaches = result["clear_shader_caches"].as<bool>();
+    }
+
+    if (result.count("disable_gpu_timeout"))
+    {
+        m_disableGpuTimeout = result["disable_gpu_timeout"].as<bool>();
+    }
+
+    if (result.count("enable_dred"))
+    {
+        m_enableDred = result["enable_dred"].as<bool>();
+    }
+
+    if (result.count("disable_background_processing"))
+    {
+        m_disableBackgroundProcessing = result["disable_background_processing"].as<bool>();
+    }
+
+    if (result.count("set_stable_power_state"))
+    {
+        m_setStablePowerState = result["set_stable_power_state"].as<bool>();
     }
 
     if (result.count("disable_agility_sdk"))
@@ -293,18 +373,23 @@ CommandLineArgs::CommandLineArgs(int argc, char** argv)
         }
     }
 
-    auto queueTypeStr = result["queue_type"].as<std::string>();
-    if (queueTypeStr == "direct")
+    if (result.count("queue_type"))
     {
-        m_commandListType = D3D12_COMMAND_LIST_TYPE_DIRECT;
-    }
-    else if (queueTypeStr == "compute")
-    {
-        m_commandListType = D3D12_COMMAND_LIST_TYPE_COMPUTE;
-    }
-    else
-    {
-        throw std::invalid_argument("Unexpected value for queue_type. Must be 'compute' or 'direct'");
+        auto temp = result["queue_type"];
+        auto queueTypeStr = temp.as<std::string>();
+
+        if (queueTypeStr == "direct")
+        {
+            m_commandListType = D3D12_COMMAND_LIST_TYPE_DIRECT;
+        }
+        else if (queueTypeStr == "compute")
+        {
+            m_commandListType = D3D12_COMMAND_LIST_TYPE_COMPUTE;
+        }
+        else
+        {
+            throw std::invalid_argument("Unexpected value for queue_type. Must be 'compute' or 'direct'");
+        }
     }
 
     if (result.count("xbox_allow_precompile") && result["xbox_allow_precompile"].as<bool>())
@@ -440,4 +525,23 @@ CommandLineArgs::CommandLineArgs(int argc, char** argv)
     }
 
     m_helpText = options.help();
+}
+
+void CommandLineArgs::SetAdapter(IAdapter* adapter)
+{
+    if (D3D12_COMMAND_LIST_TYPE_NONE == m_commandListType)
+    {
+        if (adapter->IsAttributeSupported(DXCORE_ADAPTER_ATTRIBUTE_D3D12_GRAPHICS))
+        {
+            m_commandListType = D3D12_COMMAND_LIST_TYPE_DIRECT;
+        }
+        else if(adapter->IsAttributeSupported(DXCORE_ADAPTER_ATTRIBUTE_D3D12_CORE_COMPUTE))
+        {
+            m_commandListType = D3D12_COMMAND_LIST_TYPE_COMPUTE;
+        }
+        else
+        {
+            THROW_HR(E_NOTIMPL);
+        }
+    }
 }

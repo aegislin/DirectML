@@ -10,12 +10,12 @@ public:
     OnnxDispatchable(
         std::shared_ptr<Device> device, 
         const Model::OnnxDispatchableDesc& desc,
-        const CommandLineArgs& args);
+        const CommandLineArgs& args,
+        IDxDispatchLogger* logger);
 
     void Initialize() final;
     void Bind(const Bindings& bindings, uint32_t iteration) final;
-    void Dispatch(const Model::DispatchCommand& args, uint32_t iteration) final;
-    void Wait() final;
+    void Dispatch(const Model::DispatchCommand& args, uint32_t iteration, DeferredBindings& defferedBindings) final;
 
 private:
     std::shared_ptr<Device> m_device;
@@ -42,4 +42,5 @@ private:
     std::vector<TensorBinding> m_mergedBindings;
 
     std::optional<Ort::IoBinding> m_ioBindings;
+    Microsoft::WRL::ComPtr<IDxDispatchLogger> m_logger;
 };

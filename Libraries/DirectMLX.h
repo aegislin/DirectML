@@ -2147,15 +2147,17 @@ namespace dml
         detail::GraphBuilder* builder = input.Impl()->GetGraphBuilder();
 
         TensorDesc inputTensor = input.Impl()->GetOutputDesc();
+
+#if DML_TARGET_VERSION >= 0x6200
         const uint32_t defaultStridesAndDilations[3] = { 1, 1, 1 };
         //c2220
         //uint32_t dimensionCount = static_cast<uint32_t>(inputTensor.sizes.size());
         //C2220
 //        uint32_t spatialDimensionCount = dimensionCount - 2;
 
-#if DML_TARGET_VERSION >= 0x6200
         DML_AVERAGE_POOLING1_OPERATOR_DESC averagePoolDesc = {};
-        assert(dilations.empty() || dilations.size() == spatialDimensionCount);
+        // dilations must be omitted or have the same rank as the spatial dimension count (inputTensor rank - 2)
+        assert(dilations.empty() || dilations.size() == inputTensor.sizes.size() - 2);
         averagePoolDesc.Dilations = dilations.empty() ? defaultStridesAndDilations : dilations.data();
 #else
         DML_AVERAGE_POOLING_OPERATOR_DESC averagePoolDesc = {};
@@ -3320,16 +3322,21 @@ namespace dml
     //   Scales = computed by dividing the output sizes by the input sizes
     //   InputPixelOffsets = 0.5f for each dimension
     //   OutputPixelOffsets = -0.5f for each dimension
+    //   Antialiased = false
     inline Expression Resample(
         Expression input,
         TensorDimensions outputSizes,
         DML_INTERPOLATION_MODE mode,
 #if DML_TARGET_VERSION >= 0x5100
-        DML_AXIS_DIRECTION roundingDirection,
+        DML_AXIS_DIRECTION roundingDirection = DML_AXIS_DIRECTION_INCREASING,
 #endif // DML_TARGET_VERSION >= 0x5100
         Span<const float> scales = {},
         Span<const float> inputPixelOffsets = {},
-        Span<const float> outputPixelOffsets = {})
+        Span<const float> outputPixelOffsets = {} 
+#if DML_TARGET_VERSION >= 0x6300
+        , bool antialiased = false
+#endif
+        )
     {
         detail::GraphBuilder* builder = input.Impl()->GetGraphBuilder();
 
@@ -3366,7 +3373,11 @@ namespace dml
 
         TensorDesc outputTensor(inputTensor.dataType, std::move(outputSizes), builder->GetTensorPolicy());
 
-#if DML_TARGET_VERSION >= 0x5100
+#if DML_TARGET_VERSION >= 0x6300
+        DML_RESAMPLE3_OPERATOR_DESC desc = {};
+        desc.RoundingDirection = roundingDirection;
+        desc.Antialiased = antialiased;
+#elif DML_TARGET_VERSION >= 0x5100
         DML_RESAMPLE2_OPERATOR_DESC desc = {};
         desc.RoundingDirection = roundingDirection;
 #else
@@ -3383,12 +3394,13 @@ namespace dml
 
         detail::NodeOutput* const inputs[] = { input.Impl() };
 
-#if DML_TARGET_VERSION >= 0x5100
+#if DML_TARGET_VERSION >= 0x6300
+        detail::NodeID node = builder->CreateOperatorNode(DML_OPERATOR_RESAMPLE3, &desc, inputs);
+#elif DML_TARGET_VERSION >= 0x5100
         detail::NodeID node = builder->CreateOperatorNode(DML_OPERATOR_RESAMPLE2, &desc, inputs);
 #else
         detail::NodeID node = builder->CreateOperatorNode(DML_OPERATOR_RESAMPLE1, &desc, inputs);
 #endif // DML_TARGET_VERSION >= 0x5100
-
         detail::NodeOutput* output = builder->CreateNodeOutput(node, 0, std::move(outputTensor));
 
         return output;

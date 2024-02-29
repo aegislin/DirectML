@@ -183,8 +183,9 @@ const char* GetOnnxTensorTypeString(ONNXTensorElementDataType dataType)
 OnnxDispatchable::OnnxDispatchable(
     std::shared_ptr<Device> device, 
     const Model::OnnxDispatchableDesc& desc,
-    const CommandLineArgs& args
-    ) : m_device(device), m_desc(desc), m_args(args)
+    const CommandLineArgs& args,
+    IDxDispatchLogger* logger
+    ) : m_device(device), m_desc(desc), m_args(args), m_logger(logger)
 {
 }
 
@@ -485,9 +486,9 @@ void OnnxDispatchable::Bind(const Bindings& jsonBindings, uint32_t iteration)
     {
         for (auto& binding : m_mergedBindings)
         {
-            LogInfo(fmt::format("{} Tensor '{}':", (binding.isInput ? "Input" : "Output"), binding.name));
-            LogInfo(fmt::format("  Resource  = {}", binding.resourceType));
-            LogInfo(fmt::format("  Data Type = {}", GetOnnxTensorTypeString(binding.dataType)));
+            m_logger->LogInfo(fmt::format("{} Tensor '{}':", (binding.isInput ? "Input" : "Output"), binding.name).c_str());
+            m_logger->LogInfo(fmt::format("  Resource  = {}", binding.resourceType).c_str());
+            m_logger->LogInfo(fmt::format("  Data Type = {}", GetOnnxTensorTypeString(binding.dataType)).c_str());
             std::string shapeString = "[";
             for (size_t i = 0; i < binding.shape.size(); i++)
             {
@@ -498,28 +499,110 @@ void OnnxDispatchable::Bind(const Bindings& jsonBindings, uint32_t iteration)
                 }
             }
             shapeString += "]";
-            LogInfo(fmt::format("  Shape     = {}", shapeString));
-            LogInfo("");
+            m_logger->LogInfo(fmt::format("  Shape     = {}", shapeString).c_str());
+            m_logger->LogInfo("");
         }
     }
 }
 
-void OnnxDispatchable::Dispatch(const Model::DispatchCommand& args, uint32_t iteration)
+void OnnxDispatchable::Dispatch(const Model::DispatchCommand& args, uint32_t iteration, DeferredBindings& deferredBindings)
 {
-    PIXBeginEvent(m_device->GetCommandList(), PIX_COLOR(255, 255, 0), "ONNX: '%s'", args.dispatchableName.c_str());
-    m_device->RecordTimestamp();
-    m_device->ExecuteCommandList();
+    if (m_device->GpuTimingEnabled())
+    {
+        PIXBeginEvent(m_device->GetCommandList(), PIX_COLOR(255, 255, 0), "ONNX: '%s'", args.dispatchableName.c_str());
+        m_device->RecordTimestamp();
+        m_device->ExecuteCommandList();
+    }
 
     Ort::RunOptions runOptions;
     for (uint32_t i = 0; i < m_args.DispatchRepeat(); i++)
         m_session->Run(runOptions, *m_ioBindings);
 
-    m_device->RecordTimestamp();
-    PIXEndEvent(m_device->GetCommandList());
-    m_device->ExecuteCommandList();
-}
+    if (m_device->GpuTimingEnabled())
+    {
+        m_device->RecordTimestamp();
+        PIXEndEvent(m_device->GetCommandList());
+        m_device->ExecuteCommandListAndWait();
 
-void OnnxDispatchable::Wait()
-{
-    m_ioBindings->SynchronizeOutputs();
+        // No need to call SynchronizeOutputs(), since ExecuteCommandListAndWait() will sync the CPU/GPU timelines.
+        // Calling ExecuteCommandList() followed by SynchronizeOutputs() would also sync CPU/GPU, but it would result 
+        // in the internal command allocator in m_device never being reset (i.e., slow memory leak).
+    }
+    else
+    {
+        m_ioBindings->SynchronizeOutputs();
+    }
+
+    if (deferredBindings.size() == 0)
+    {
+        return;
+    }
+
+    auto values = m_ioBindings->GetOutputValues();
+    auto names = m_ioBindings->GetOutputNames();
+    for (auto &output : deferredBindings)
+    {
+        bool isFound = false;
+        auto deferredBinding = &output.second;
+        for (size_t i = 0; i < values.size(); i++)
+        {
+            if (deferredBinding->name == names[i])
+            {
+                isFound = true;
+                auto shapeInfo = values[i].GetTensorTypeAndShapeInfo();
+                auto shape = shapeInfo.GetShape();
+                auto type = shapeInfo.GetElementType();
+
+                if (m_args.PrintVerboseOnnxBindingInfo())
+                {
+                    m_logger->LogInfo(fmt::format("Output Tensor '{}':", names[i]).c_str());
+                    m_logger->LogInfo(fmt::format("  Resource  = {}", "resolved").c_str());
+                    m_logger->LogInfo(fmt::format("  Data Type = {}", GetOnnxTensorTypeString(type)).c_str());
+                    std::string shapeString;
+                    for (size_t j = 0; j < shape.size(); j++)
+                    {
+                        shapeString += "[" + std::to_string(shape[j]) + "]";
+                    }
+                    m_logger->LogInfo(fmt::format("  Shape     = {}", shapeString).c_str());
+                    m_logger->LogInfo("");
+                }
+
+                const OrtApi& ortApi = Ort::GetApi();
+
+                deferredBinding->elementCount = shapeInfo.GetElementCount();
+                deferredBinding->shape = shape;
+                deferredBinding->type = GetDataTypeInfo(type).dmlDataType;
+                deferredBinding->elementSizeInBytes = Device::GetSizeInBytes(deferredBinding->type);
+
+                if (deferredBinding->elementCount > 0)
+                {
+                    if (shapeInfo.GetElementType() == DML_TENSOR_DATA_TYPE_UNKNOWN)
+                    {
+                        std::byte* tensorData = static_cast<std::byte*>(values[i].GetTensorMutableRawData());
+                        deferredBinding->cpuValues = std::vector<std::byte>(
+                            tensorData,
+                            tensorData + deferredBinding->elementSizeInBytes);
+                    }
+                    else
+                    {
+                        auto memInfo = Ort::MemoryInfo("DML", OrtAllocatorType::OrtDeviceAllocator, 0, OrtMemType::OrtMemTypeDefault);
+                        auto allocator = Ort::Allocator(m_session.value(), memInfo);
+
+                        ComPtr<ID3D12Resource> resource;
+                        auto mutableData = values[i].GetTensorMutableData<void>();
+                        Ort::ThrowOnError(m_ortDmlApi->GetD3D12ResourceFromAllocation(
+                            allocator,
+                            mutableData,
+                            &deferredBinding->resource
+                        ));
+                    }
+                }
+            }
+        }
+
+        if (!isFound)
+        {
+            throw std::invalid_argument(fmt::format("Could not find deferred binding {}", deferredBinding->name));
+        }
+    }
 }

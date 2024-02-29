@@ -1,5 +1,5 @@
 #define NOMINMAX
-
+#define _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS
 #ifndef WIN32
 #include <wsl/winadapter.h>
 #include "directml_guids.h"
@@ -1861,7 +1861,7 @@ TEST(ParseExecuteCommandTest, StringBindings)
     })");
     ASSERT_FALSE(d.HasParseError());
 
-    auto command = ParseModelCommand(d);
+    auto command = ParseModelCommand(d, std::filesystem::current_path());
     ASSERT_TRUE(std::holds_alternative<Model::DispatchCommand>(command));
     auto& cmd = std::get<Model::DispatchCommand>(command);
     EXPECT_EQ(cmd.dispatchableName, "add");
@@ -1915,7 +1915,7 @@ TEST(ParseExecuteCommandTest, ObjectBindings)
     })");
     ASSERT_FALSE(d.HasParseError());
 
-    auto command = ParseModelCommand(d);
+    auto command = ParseModelCommand(d, std::filesystem::current_path());
     ASSERT_TRUE(std::holds_alternative<Model::DispatchCommand>(command));
     auto& cmd = std::get<Model::DispatchCommand>(command);
     EXPECT_EQ(cmd.dispatchableName, "test");
@@ -1964,7 +1964,7 @@ TEST(ParseExecuteCommandTest, ArrayBindings)
     })");
     ASSERT_FALSE(d.HasParseError());
 
-    auto command = ParseModelCommand(d);
+    auto command = ParseModelCommand(d, std::filesystem::current_path());
     ASSERT_TRUE(std::holds_alternative<Model::DispatchCommand>(command));
     auto& cmd = std::get<Model::DispatchCommand>(command);
     EXPECT_EQ(cmd.dispatchableName, "join");

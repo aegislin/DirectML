@@ -5,12 +5,11 @@
 class HlslDispatchable : public Dispatchable
 {
 public:
-    HlslDispatchable(std::shared_ptr<Device> device, const Model::HlslDispatchableDesc& desc, const CommandLineArgs& args);
+    HlslDispatchable(std::shared_ptr<Device> device, const Model::HlslDispatchableDesc& desc, const CommandLineArgs& args, IDxDispatchLogger* logger);
 
     void Initialize() final;
     void Bind(const Bindings& bindings, uint32_t iteration) final;
-    void Dispatch(const Model::DispatchCommand& args, uint32_t iteration) final;
-    void Wait() final;
+    void Dispatch(const Model::DispatchCommand& args, uint32_t iteration, DeferredBindings& deferredBinings) final;
 
     enum class BufferViewType
     {
@@ -41,4 +40,5 @@ private:
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_descriptorHeap;
     std::unordered_map<std::string, BindPoint> m_bindPoints;
     bool m_printHlslDisassembly = false;
+    Microsoft::WRL::ComPtr<IDxDispatchLogger> m_logger;
 };
