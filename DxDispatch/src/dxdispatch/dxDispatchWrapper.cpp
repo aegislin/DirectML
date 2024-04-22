@@ -38,7 +38,7 @@ HRESULT DxDispatch::CreateDxDispatchFromJsonString(
     ComPtr<DxDispatch> dxDispatchImpl;
     ComPtr<IAdapter> adapter;
 
-    if(adapterUnk)
+    if (adapterUnk)
     {
         RETURN_IF_FAILED(adapterUnk->QueryInterface(IID_PPV_ARGS(&adapter)));
     }
@@ -160,7 +160,8 @@ HRESULT DxDispatch::RuntimeClassInitialize(
             m_options->SetAdapter(dxDispatchAdapter->GetAdapter());
             m_device = std::make_shared<Device>(
                 dxDispatchAdapter->GetAdapter(),
-                D3D_FEATURE_LEVEL_1_0_CORE,
+                D3D_FEATURE_LEVEL_1_0_GENERIC,
+                m_options->DmlFeatureLevel(),
                 m_options->DebugLayersEnabled(),
                 m_options->CommandListType(),
                 m_options->DispatchRepeat(),

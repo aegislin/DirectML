@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(dxdispatch VERSION 0.16.5 LANGUAGES CXX)
+project(dxdispatch VERSION 0.17.1 LANGUAGES CXX)
 
 # ==============================================================================
 # External Libraries/Helpers
@@ -62,8 +62,13 @@ add_onnxruntime_extensions_target(onnxruntime_extensions CACHE_PREFIX DXD)
 # Global Defines for CMAKE
 # ==============================================================================
 if(MSVC)
-    add_compile_options(/guard:cf /Qspectre /GS /sdl )
-    add_link_options(/GUARD:CF /DYNAMICBASE )
+    add_compile_options(/guard:cf /Qspectre /GS /sdl  /W3 )    
+    if( TARGET_ARCH STREQUAL ARM64 OR
+        TARGET_ARCH STREQUAL ARM)
+        add_link_options(/GUARD:CF /DYNAMICBASE)
+    else()
+        add_link_options(/GUARD:CF /DYNAMICBASE /CETCOMPAT)
+    endif()
 endif()
 
 # ==============================================================================
@@ -342,6 +347,7 @@ if(DXD_TESTS)
     model_test(dml_split "Resource 'Out1': 1, 2\nResource 'Out2': 3, 4\nResource 'Out3': 5, 6")
     model_test(dml_upsample_2d "Resource 'output': 1, 1.25, 1.75, 2, 1.5, 1.75, 2.25, 2.5, 2.5, 2.75, 3.25, 3.5, 3, 3.25, 3.75, 4")
     model_test(dml_owned_tensors "Resource 'Out': 6, 10, -2")
+    model_test(dml_scalar_union_fp16 "Resource 'output': 2, 2, 3, 4, 4")
     if(NOT dxcompiler_type STREQUAL None)
         model_test(hlsl_add_fp32 "Resource 'Out': 2, 7, 6, 11, 2, 7")
     endif()

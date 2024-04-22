@@ -339,7 +339,7 @@ void Executor::operator()(const Model::DispatchCommand& command)
     // overwritten, in which case the warmup samples are dropped.
     gpuTimings.rawSamples = m_device->ResolveTimingSamples();
     assert(cpuTimings.rawSamples.size() >= gpuTimings.rawSamples.size());
-    uint32_t gpuSamplesOverwritten = gpuTimings.rawSamples.empty() ? 0 : cpuTimings.rawSamples.size() - gpuTimings.rawSamples.size();
+    auto gpuSamplesOverwritten =  static_cast<uint32_t>(gpuTimings.rawSamples.empty() ? 0 : cpuTimings.rawSamples.size() - gpuTimings.rawSamples.size());
     auto gpuStats = gpuTimings.ComputeStats(std::max(m_commandLineArgs.MaxWarmupSamples(), gpuSamplesOverwritten) - gpuSamplesOverwritten);
 
     if (iterationsCompleted > 0)
@@ -440,7 +440,11 @@ template <typename T>
 std::ostream& operator<<(std::ostream& os, const BufferDataView<T>& view)
 {
     auto nBytes = std::max(view.desc.sizeInBytes, (uint64_t) view.desc.initialValues.size());
-    uint32_t elementCount = nBytes / Device::GetSizeInBytes(view.desc.initialValuesDataType);
+    uint64_t elementCount = nBytes / Device::GetSizeInBytes(view.desc.initialValuesDataType);
+    if (elementCount > std::numeric_limits<uint32_t>::max())
+    {
+        throw std::invalid_argument("Buffer size is too large");
+    }
     auto values = reinterpret_cast<const T*>(view.byteValues.data());
     for (uint32_t elementIndex = 0; elementIndex < elementCount; elementIndex++)
     {
@@ -502,19 +506,32 @@ void Executor::operator()(const Model::PrintCommand& command)
             {
                 outputValues = gsl::span<std::byte>(deferredBinding->cpuValues);
             }
-            bufferDesc = {
+
+            bufferDesc = 
+            {
                 (deferredBinding->elementCount * deferredBinding->elementSizeInBytes),
                 std::vector<std::byte>(),
                 deferredBinding->type,
                 0,
-                true };
+                true 
+            };
         }
         else
         {
             resource = m_resources[command.resourceName].Get();
             bufferDesc = bufferDescTemp;
+
+            // Buffers are padded up to a 4 byte alignment (DML requirement), but for printing the padding 
+            // might be confusing. For example, a buffer initialized with 5x FP16 elements would would only
+            // require 10 bytes, but the buffer's actual size would be 12 bytes. Printing the buffer based
+            // on its size alone would show 6x FP16 elements (last element being padding) so this trims the 
+            // buffer view to match the non-padded region.
+            if (bufferDesc->initialValues.size() > 0)
+            {
+                bufferDesc->sizeInBytes = bufferDesc->initialValues.size();
+            }
         } 
-        if(resource)
+        if (resource)
         {
             outputValuesStorage = m_device->Download(resource);
             outputValues = outputValuesStorage;
@@ -569,7 +586,7 @@ void Executor::operator()(const Model::WriteFileCommand& command)
             dimensions = std::vector<uint32_t>(command.dimensions);
             tensorType = bufferDesc.initialValuesDataType;
         } 
-        if(resource)
+        if (resource)
         {
             fileDataStorage = m_device->Download(resource);
             fileData = fileDataStorage;
