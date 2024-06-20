@@ -22,6 +22,8 @@ public:
         bool enableDred,
         bool disableBackgroundProcessing,
         bool setStablePowerState,
+        bool preferCustomHeaps,
+        bool usePresentSeparator,
         uint32_t maxGpuTimeMeasurements,
         std::shared_ptr<PixCaptureHelper> pixCaptureHelper,
         std::shared_ptr<D3d12Module> d3dModule,
@@ -45,7 +47,19 @@ public:
     IDxcCompiler3* GetDxcCompiler();
 #endif
 
-    // TODO: test custom heap buffer with write combine for igpu?
+    // Creates either a default buffer or custom buffer based on support for custom heaps
+    // and whether or not they are allowed.
+    Microsoft::WRL::ComPtr<ID3D12Resource> CreatePreferredDeviceMemoryBuffer(
+        uint64_t sizeInBytes, 
+        D3D12_RESOURCE_FLAGS resourceFlags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+        uint64_t alignment = 0,
+        D3D12_HEAP_FLAGS heapFlags = D3D12_HEAP_FLAG_NONE);
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> CreateCustomBuffer(
+        uint64_t sizeInBytes, 
+        D3D12_RESOURCE_FLAGS resourceFlags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+        uint64_t alignment = 0,
+        D3D12_HEAP_FLAGS heapFlags = D3D12_HEAP_FLAG_NONE);
 
     Microsoft::WRL::ComPtr<ID3D12Resource> CreateDefaultBuffer(
         uint64_t sizeInBytes, 
@@ -108,6 +122,8 @@ public:
     static uint32_t GetSizeInBytes(DML_TENSOR_DATA_TYPE dataType);
     static DXGI_FORMAT GetDxgiFormatFromDmlTensorDataType(DML_TENSOR_DATA_TYPE dataType);
 
+    void DummyPresent();
+
 private:
     void EnsureDxcInterfaces();
 
@@ -137,10 +153,16 @@ private:
     Microsoft::WRL::ComPtr<IDxDispatchLogger> m_logger;
     bool m_restoreBackgroundProcessing = false;
     bool m_restoreStablePowerState = false;
+    std::optional<D3D12_FEATURE_DATA_ARCHITECTURE1> m_architectureSupport;
+    bool m_useCustomHeaps = false;
 
 #ifndef DXCOMPILER_NONE
     Microsoft::WRL::ComPtr<IDxcUtils> m_dxcUtils;
     Microsoft::WRL::ComPtr<IDxcIncludeHandler> m_dxcIncludeHandler;
     Microsoft::WRL::ComPtr<IDxcCompiler3> m_dxcCompiler;
+#endif
+
+#if defined(INCLUDE_DXGI)
+    Microsoft::WRL::ComPtr<IDXGISwapChain1> m_dummySwapChain;
 #endif
 };

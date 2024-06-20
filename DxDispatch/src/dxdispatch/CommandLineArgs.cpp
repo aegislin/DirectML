@@ -122,6 +122,11 @@ CommandLineArgs::CommandLineArgs(int argc, char** argv)
             cxxopts::value<std::string>()
         )
         (
+            "disable_custom_heaps", 
+            "Always use default heaps for resources",
+            cxxopts::value<bool>()
+        )
+        (
             "clear_shader_caches", 
             "Clears D3D shader caches before running commands", 
             cxxopts::value<bool>()
@@ -186,6 +191,11 @@ CommandLineArgs::CommandLineArgs(int argc, char** argv)
             "o,pix_capture_name",
             "Name used for PIX capture files.",
             cxxopts::value<std::string>()->default_value("dxdispatch")
+        )
+        (
+            "present_separator",
+            "Injects present after each full inference pass, giving debugging tools a notion of frames.",
+            cxxopts::value<bool>()
         )
         ;
 
@@ -322,6 +332,11 @@ CommandLineArgs::CommandLineArgs(int argc, char** argv)
         m_showDependencies = result["show_dependencies"].as<bool>();
     }
 
+    if (result.count("disable_custom_heaps"))
+    {
+        m_preferCustomHeaps = !result["disable_custom_heaps"].as<bool>();
+    }
+
     if (result.count("clear_shader_caches"))
     {
         m_clearShaderCaches = result["clear_shader_caches"].as<bool>();
@@ -350,6 +365,11 @@ CommandLineArgs::CommandLineArgs(int argc, char** argv)
     if (result.count("disable_agility_sdk"))
     {
         m_disableAgilitySDK = result["disable_agility_sdk"].as<bool>();
+    }
+
+    if (result.count("present_separator"))
+    {
+        m_presentSeparator = result["present_separator"].as<bool>();
     }
 
     if (result.count("print_hlsl_disassembly"))
