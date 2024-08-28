@@ -87,7 +87,9 @@ FetchContent_MakeAvailable(cxxopts)
 FetchContent_Declare(
     dml
     URL https://www.nuget.org/api/v2/package/Microsoft.AI.DirectML/1.15.2
-    URL_HASH SHA256=F43EB3D8B39F588B6CF049EAF1E0EA6006774EB8C93C661A1DE7721E674F7F56
+	#XXX: a: tried multiple times and always got the following hash
+	URL_HASH SHA256=9f07482559087088a4dba4ae76eeeee1fad3f7077a92ccfbdb439c6bc2964c09
+    #URL_HASH SHA256=F43EB3D8B39F588B6CF049EAF1E0EA6006774EB8C93C661A1DE7721E674F7F56
 )
 
 FetchContent_MakeAvailable(dml)
